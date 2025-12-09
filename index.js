@@ -47,7 +47,11 @@ async function run() {
         await client.connect();
         const db = client.db("tuitron_db");
         const usersCollection = db.collection("users");
+        const tuitionsCollection = db.collection("tuitions");
+        const applicationsCollection = db.collection("applications");
+        const paymentsCollection = db.collection("payments");
 
+        // User APIs
         app.post("/users/register", async (req, res) => {
             const { name, email, phone, role } = req.body;
             if (!name || !email || !phone) {
@@ -97,6 +101,56 @@ async function run() {
             const user = await usersCollection.findOne({ email });
             if (!user) return res.status(404).send({ message: "User not found" });
             res.send({ email: user.email, role: user.role });
+        });
+
+        // tuitions APIs
+        app.post("/tuitions", verifyFirebaseToken, async (req, res) => {
+            const { subject, class: className, location, budget, schedule } = req.body;
+            const student_email = req.token_email;
+
+            if (!subject || !className || !location || !budget || !schedule)
+                return res.status(400).send({ message: "All fields required" });
+
+            const newTuition = {
+                student_email,
+                subject,
+                class: className,
+                location,
+                budget,
+                schedule,
+                status: "Pending",
+                createdAt: new Date()
+            };
+
+            await tuitionsCollection.insertOne(newTuition);
+            res.status(201).send({ tuition: newTuition });
+        });
+
+        app.get("/tuitions", verifyFirebaseToken, async (req, res) => {
+            const { role } = req.query;
+            const email = req.token_email;
+
+            let filter = {};
+            if (role === "Student") filter = { student_email: email };
+            const tuitions = await tuitionsCollection.find(filter).toArray();
+            res.send({ tuitions });
+        });
+
+        app.put("/tuitions/:id", verifyFirebaseToken, async (req, res) => {
+            const { id } = req.params;
+            const { subject, class: className, location, budget, schedule } = req.body;
+
+            const result = await tuitionsCollection.updateOne(
+                { _id: new ObjectId(id), student_email: req.token_email },
+                { $set: { subject, class: className, location, budget, schedule } }
+            );
+            res.send(result);
+        });
+
+        app.delete("/tuitions/:id", verifyFirebaseToken, async (req, res) => {
+            const { id } = req.params;
+            const result = await tuitionsCollection.deleteOne({ _id: new ObjectId(id), student_email: req.token_email });
+            res.send(result);
         });
 
         console.log("MongoDB connected successfully!");
