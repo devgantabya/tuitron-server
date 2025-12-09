@@ -153,6 +153,72 @@ async function run() {
             res.send(result);
         });
 
+        // Applications APIs
+        app.post("/applications/:tuitionId", verifyFirebaseToken, async (req, res) => {
+            const { tuitionId } = req.params;
+            const { qualifications, experience, expected_salary } = req.body;
+
+            const tutor_email = req.token_email;
+            const name = req.body.name || req.token_email;
+
+            const newApp = {
+                tuition_id: new ObjectId(tuitionId),
+                tutor_email,
+                name,
+                qualifications,
+                experience,
+                expected_salary,
+                status: "Pending",
+                createdAt: new Date()
+            };
+
+            await applicationsCollection.insertOne(newApp);
+            res.status(201).send({ application: newApp });
+        });
+
+        app.get("/applications/:tuitionId", verifyFirebaseToken, async (req, res) => {
+            const { tuitionId } = req.params;
+            const applications = await applicationsCollection.find({ tuition_id: new ObjectId(tuitionId) }).toArray();
+            res.send({ applications });
+        });
+
+        app.put("/applications/:id/status", verifyFirebaseToken, async (req, res) => {
+            const { id } = req.params;
+            const { status } = req.body;
+
+            const result = await applicationsCollection.updateOne(
+                { _id: new ObjectId(id) },
+                { $set: { status } }
+            );
+            res.send(result);
+        });
+
+        // Admin APIs
+        app.get("/admin/users", verifyFirebaseToken, async (req, res) => {
+            const users = await usersCollection.find().toArray();
+            res.send({ users });
+        });
+
+        app.put("/admin/users/:id", verifyFirebaseToken, async (req, res) => {
+            const { id } = req.params;
+            const updateData = req.body;
+            const result = await usersCollection.updateOne({ _id: new ObjectId(id) }, { $set: updateData });
+            res.send(result);
+        });
+
+        app.delete("/admin/users/:id", verifyFirebaseToken, async (req, res) => {
+            const { id } = req.params;
+            const result = await usersCollection.deleteOne({ _id: new ObjectId(id) });
+            res.send(result);
+        });
+
+        app.put("/admin/tuitions/:id/status", verifyFirebaseToken, async (req, res) => {
+            const { id } = req.params;
+            const { status } = req.body; // Approved / Rejected
+            const result = await tuitionsCollection.updateOne({ _id: new ObjectId(id) }, { $set: { status } });
+            res.send(result);
+        });
+
         console.log("MongoDB connected successfully!");
     } finally {
         // Keep connection open
