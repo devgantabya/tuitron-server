@@ -24,7 +24,6 @@ const verifyFirebaseToken = async (req, res, next) => {
     const header = req.headers.authorization;
     if (!header?.startsWith("Bearer ")) return res.status(401).send({ message: "Unauthorized" });
     const token = header.split(" ")[1];
-    // console.log("Verifying token:", token);
     try {
         const info = await admin.auth().verifyIdToken(token);
         req.token_email = info.email;
@@ -52,26 +51,18 @@ async function run() {
         const db = client.db("tuitron_db");
         const usersCollection = db.collection("users");
         const tuitionsCollection = db.collection("tuitions");
+        const tuitorsCollection = db.collection("tuitors");
         const applicationsCollection = db.collection("applications");
         const paymentsCollection = db.collection("payments");
 
         // User APIs
         app.post("/users/register", async (req, res) => {
-            const { name, email, phone, role } = req.body;
-            if (!name || !email || !phone) {
-                return res.status(400).send({ message: "Missing required fields" });
-            }
+            const { name, email, phone, role, image } = req.body;
+            if (!name || !email || !phone) return res.status(400).send({ message: "Missing required fields" });
             try {
                 let user = await usersCollection.findOne({ email });
                 if (!user) {
-                    const newUser = {
-                        uid: null,
-                        email,
-                        name,
-                        phone,
-                        role: role || "Student",
-                        image: null,
-                    };
+                    const newUser = { uid: null, email, name, phone, role: role || "Student", image: image || null };
                     await usersCollection.insertOne(newUser);
                     user = newUser;
                 }
@@ -82,18 +73,28 @@ async function run() {
             }
         });
 
+        app.post("/users/google", async (req, res) => {
+            const { name, email, image, uid } = req.body;
+            if (!email || !uid) return res.status(400).send({ message: "Missing uid or email" });
+            try {
+                let user = await usersCollection.findOne({ email });
+                if (!user) {
+                    const newUser = { uid, email, name, phone: "", role: "Student", image };
+                    await usersCollection.insertOne(newUser);
+                    user = newUser;
+                }
+                res.status(200).send({ user });
+            } catch (err) {
+                console.error(err);
+                res.status(500).send({ message: "Failed to login with Google" });
+            }
+        });
+
         app.post("/users", verifyFirebaseToken, async (req, res) => {
             const email = req.token_email;
             let user = await usersCollection.findOne({ email });
             if (!user) {
-                const newUser = {
-                    uid: req.token_uid,
-                    email,
-                    name: req.body.name,
-                    phone: req.body.phone || "",
-                    role: req.body.role || "Student",
-                    image: req.token_picture,
-                };
+                const newUser = { uid: req.token_uid, email, name: req.body.name, phone: req.body.phone || "", role: req.body.role || "Student", image: req.token_picture };
                 await usersCollection.insertOne(newUser);
                 user = newUser;
             }
@@ -107,49 +108,38 @@ async function run() {
             res.send({ email: user.email, role: user.role });
         });
 
-        // tuitions APIs
+        // Tuition APIs
         app.post("/tuitions", verifyFirebaseToken, async (req, res) => {
             const { subject, class_level, location, budget, schedule, details } = req.body;
             const student_email = req.token_email;
-
             if (!subject || !class_level || !location || !budget || !schedule)
                 return res.status(400).send({ message: "All fields required" });
-
-            const newTuition = {
-                student_email,
-                subject,
-                class_level,
-                location,
-                budget,
-                schedule,
-                details: details || "",
-                status: "Pending",
-                createdAt: new Date(),
-            };
-
+            const newTuition = { student_email, subject, class_level, location, budget, schedule, details: details || "", status: "Pending", createdAt: new Date() };
             const result = await tuitionsCollection.insertOne(newTuition);
             res.status(201).send({ tuition: { _id: result.insertedId, ...newTuition } });
         });
 
         app.get("/tuitions", async (req, res) => {
             const { singleId } = req.query;
-
             if (singleId) {
                 try {
                     const t = await tuitionsCollection.findOne({ _id: new ObjectId(singleId) });
                     return res.send({ tuitions: t ? [t] : [] });
-                } catch (err) {
+                } catch {
                     return res.status(400).send({ tuitions: [] });
                 }
             }
-
             const tuitions = await tuitionsCollection.find().toArray();
+            res.send({ tuitions });
+        });
+
+        app.get("/latest-tuitions", async (req, res) => {
+            const tuitions = await tuitionsCollection.find().sort({ createdAt: -1 }).limit(5).toArray();
             res.send({ tuitions });
         });
 
         app.get("/tuitions/:id", async (req, res) => {
             const { id } = req.params;
-
             try {
                 const tuition = await tuitionsCollection.findOne({ _id: new ObjectId(id) });
                 if (!tuition) return res.status(404).send({ message: "Tuition not found" });
@@ -163,7 +153,6 @@ async function run() {
         app.put("/tuitions/:id", verifyFirebaseToken, async (req, res) => {
             const { id } = req.params;
             const { subject, class_level, location, budget, schedule, details } = req.body;
-
             try {
                 const result = await tuitionsCollection.updateOne(
                     { _id: new ObjectId(id), student_email: req.token_email },
@@ -185,14 +174,170 @@ async function run() {
             }
         });
 
-        // Applications APIs
+        // Tuitor APIs
+        app.get("/tutors", async (req, res) => {
+            const tutors = await tuitorsCollection.find().toArray();
+            res.send({ tutors });
+        });
+
+        app.post("/tutors", verifyFirebaseToken, async (req, res) => {
+            const { name, email, qualifications, experience, subjects, class_levels, location, expected_salary, image } = req.body;
+            if (!name || !email || !subjects || !class_levels || !location)
+                return res.status(400).send({ message: "Missing required fields" });
+            const newTutor = { name, email, qualifications: qualifications || "", experience: experience || "", subjects, class_levels, location, expected_salary: expected_salary || 0, image: image || null, createdAt: new Date() };
+            const result = await tuitorsCollection.insertOne(newTutor);
+            res.status(201).send({ tutor: { _id: result.insertedId, ...newTutor } });
+        });
+
+        app.get("/tutors/:id", async (req, res) => {
+            const { id } = req.params;
+            try {
+                const tutor = await tuitorsCollection.findOne({ _id: new ObjectId(id) });
+                if (!tutor) return res.status(404).send({ message: "Tutor not found" });
+                res.send(tutor);
+            } catch (err) {
+                console.error(err);
+                res.status(500).send({ message: "Failed to fetch tutor" });
+            }
+        });
+
+        app.put("/tutors/:id", verifyFirebaseToken, async (req, res) => {
+            const { id } = req.params;
+            try {
+                const result = await tuitorsCollection.updateOne({ _id: new ObjectId(id), email: req.token_email }, { $set: req.body });
+                res.send(result);
+            } catch (err) {
+                res.status(400).send({ message: "Invalid id" });
+            }
+        });
+
+        app.delete("/tutors/:id", verifyFirebaseToken, async (req, res) => {
+            const { id } = req.params;
+            try {
+                const result = await tuitorsCollection.deleteOne({ _id: new ObjectId(id), email: req.token_email });
+                res.send(result);
+            } catch (err) {
+                res.status(400).send({ message: "Invalid id" });
+            }
+        });
+
+
+        // Student APIs
+        app.get("/student", verifyFirebaseToken, async (req, res) => {
+            try {
+                const email = req.token_email;
+                const tuitions = await tuitionsCollection.find({ student_email: email }).toArray();
+                res.send(tuitions);
+            } catch (err) {
+                console.error(err);
+                res.status(500).send([]);
+            }
+        });
+
+        app.post("/student", verifyFirebaseToken, async (req, res) => {
+            try {
+                const email = req.token_email;
+                const { subject, classLevel, location, budget, schedule, details } = req.body;
+
+                if (!subject || !classLevel || !location || !budget || !schedule)
+                    return res.status(400).send({ message: "All fields required" });
+
+                const newTuition = {
+                    student_email: email,
+                    subject,
+                    classLevel,
+                    location,
+                    budget,
+                    schedule,
+                    details: details || "",
+                    status: "Pending",
+                    createdAt: new Date(),
+                };
+
+                const result = await tuitionsCollection.insertOne(newTuition);
+                res.status(201).send({ _id: result.insertedId, ...newTuition });
+            } catch (err) {
+                console.error(err);
+                res.status(500).send({ message: "Failed to create tuition" });
+            }
+        });
+
+        app.put("/student/:id", verifyFirebaseToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const email = req.token_email;
+
+                const updateData = req.body;
+                const result = await tuitionsCollection.updateOne(
+                    { _id: new ObjectId(id), student_email: email },
+                    { $set: updateData }
+                );
+
+                res.send(result);
+            } catch (err) {
+                console.error(err);
+                res.status(400).send({ message: "Invalid tuition id" });
+            }
+        });
+
+        app.delete("/student/:id", verifyFirebaseToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const email = req.token_email;
+
+                const result = await tuitionsCollection.deleteOne({
+                    _id: new ObjectId(id),
+                    student_email: email,
+                });
+
+                res.send(result);
+            } catch (err) {
+                console.error(err);
+                res.status(400).send({ message: "Invalid tuition id" });
+            }
+        });
+
+        app.get("/student/:id/applications", verifyFirebaseToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const applications = await applicationsCollection
+                    .find({ tuition_id: new ObjectId(id) })
+                    .toArray();
+
+                res.send(applications);
+            } catch (err) {
+                console.error(err);
+                res.status(500).send([]);
+            }
+        });
+
+        app.put("/student/:tuitionId/applications/:appId", verifyFirebaseToken, async (req, res) => {
+            try {
+                const { tuitionId, appId } = req.params;
+                const { action } = req.body;
+
+                if (!["approve", "reject"].includes(action))
+                    return res.status(400).send({ message: "Invalid action" });
+
+                const newStatus = action === "approve" ? "Approved" : "Rejected";
+                const result = await applicationsCollection.updateOne(
+                    { _id: new ObjectId(appId), tuition_id: new ObjectId(tuitionId) },
+                    { $set: { status: newStatus } }
+                );
+
+                res.send(result);
+            } catch (err) {
+                console.error(err);
+                res.status(400).send({ message: "Failed to update application" });
+            }
+        });
+
+        // Application APIs
         app.post("/applications/:tuitionId", verifyFirebaseToken, async (req, res) => {
             const { tuitionId } = req.params;
             const { qualifications, experience, expected_salary } = req.body;
-
             const tutor_email = req.token_email;
             const name = req.body.name || req.body.tutorName || req.token_email;
-
             const newApp = {
                 tuition_id: new ObjectId(tuitionId),
                 tutor_email,
@@ -203,7 +348,6 @@ async function run() {
                 status: "Pending",
                 createdAt: new Date(),
             };
-
             const result = await applicationsCollection.insertOne(newApp);
             res.status(201).send({ application: { _id: result.insertedId, ...newApp } });
         });
@@ -213,7 +357,7 @@ async function run() {
             try {
                 const applications = await applicationsCollection.find({ tuition_id: new ObjectId(tuitionId) }).toArray();
                 res.send({ applications });
-            } catch (err) {
+            } catch {
                 res.status(400).send({ applications: [] });
             }
         });
@@ -224,89 +368,110 @@ async function run() {
             try {
                 const result = await applicationsCollection.updateOne({ _id: new ObjectId(id) }, { $set: { status } });
                 res.send(result);
-            } catch (err) {
+            } catch {
                 res.status(400).send({ message: "Invalid id" });
             }
         });
 
-        // Student APIs
         app.get("/student", verifyFirebaseToken, async (req, res) => {
             const email = req.token_email;
-
-            const tuitions = await tuitionsCollection
-                .find({ student_email: email })
-                .toArray();
-
+            const tuitions = await tuitionsCollection.find({ student_email: email }).toArray();
             res.send(tuitions);
         });
 
         app.post("/student", verifyFirebaseToken, async (req, res) => {
             const email = req.token_email;
             const data = req.body;
-
-            const newTuition = {
-                ...data,
-                student_email: email,
-                status: "Pending",
-                createdAt: new Date(),
-            };
-
+            const newTuition = { ...data, student_email: email, status: "Pending", createdAt: new Date() };
             const result = await tuitionsCollection.insertOne(newTuition);
-
             res.send({ _id: result.insertedId, ...newTuition });
         });
 
         app.put("/student/:id", verifyFirebaseToken, async (req, res) => {
             const { id } = req.params;
             const email = req.token_email;
-
-            const result = await tuitionsCollection.updateOne(
-                { _id: new ObjectId(id), student_email: email },
-                { $set: req.body }
-            );
-
+            const result = await tuitionsCollection.updateOne({ _id: new ObjectId(id), student_email: email }, { $set: req.body });
             res.send(result);
         });
 
         app.delete("/student/:id", verifyFirebaseToken, async (req, res) => {
             const { id } = req.params;
             const email = req.token_email;
-
-            const result = await tuitionsCollection.deleteOne({
-                _id: new ObjectId(id),
-                student_email: email,
-            });
-
+            const result = await tuitionsCollection.deleteOne({ _id: new ObjectId(id), student_email: email });
             res.send(result);
         });
 
         app.get("/student/:id/applications", verifyFirebaseToken, async (req, res) => {
             const { id } = req.params;
-
-            const apps = await applicationsCollection
-                .find({ tuition_id: new ObjectId(id) })
-                .toArray();
-
+            const apps = await applicationsCollection.find({ tuition_id: new ObjectId(id) }).toArray();
             res.send(apps);
         });
 
         app.put("/student/:tid/applications/:aid", verifyFirebaseToken, async (req, res) => {
             const { tid, aid } = req.params;
             const { action } = req.body;
-
-            if (!["approve", "reject"].includes(action)) {
-                return res.status(400).send({ message: "Invalid action" });
-            }
-
+            if (!["approve", "reject"].includes(action)) return res.status(400).send({ message: "Invalid action" });
             const newStatus = action === "approve" ? "Approved" : "Rejected";
-
-            const result = await applicationsCollection.updateOne(
-                { _id: new ObjectId(aid), tuition_id: new ObjectId(tid) },
-                { $set: { status: newStatus } }
-            );
-
+            const result = await applicationsCollection.updateOne({ _id: new ObjectId(aid), tuition_id: new ObjectId(tid) }, { $set: { status: newStatus } });
             res.send(result);
         });
+
+        // Payment APIs (Simulated)
+        app.post("/student/:tuitionId/pay/:applicationId", verifyFirebaseToken, async (req, res) => {
+            const { tuitionId, applicationId } = req.params;
+            const { amount } = req.body; // amount expected to pay
+
+            if (!amount) return res.status(400).send({ message: "Amount required" });
+
+            try {
+                const newPayment = {
+                    student_email: req.token_email,
+                    tuition_id: new ObjectId(tuitionId),
+                    application_id: new ObjectId(applicationId),
+                    amount,
+                    status: "Pending",
+                    createdAt: new Date(),
+                };
+                const result = await paymentsCollection.insertOne(newPayment);
+
+                res.status(201).send({ paymentId: result.insertedId, clientSecret: "simulated_secret_key" });
+            } catch (err) {
+                console.error(err);
+                res.status(500).send({ message: "Failed to create payment" });
+            }
+        });
+
+        app.post("/student/:tuitionId/confirm-payment/:applicationId", verifyFirebaseToken, async (req, res) => {
+            const { tuitionId, applicationId } = req.params;
+
+            try {
+                await paymentsCollection.updateOne(
+                    { tuition_id: new ObjectId(tuitionId), application_id: new ObjectId(applicationId) },
+                    { $set: { status: "Completed", completedAt: new Date() } }
+                );
+
+                await applicationsCollection.updateOne(
+                    { _id: new ObjectId(applicationId), tuition_id: new ObjectId(tuitionId) },
+                    { $set: { status: "Approved" } }
+                );
+
+                await applicationsCollection.updateMany(
+                    { tuition_id: new ObjectId(tuitionId), _id: { $ne: new ObjectId(applicationId) } },
+                    { $set: { status: "Rejected" } }
+                );
+
+                await tuitionsCollection.updateOne(
+                    { _id: new ObjectId(tuitionId) },
+                    { $set: { status: "Assigned" } }
+                );
+
+                res.send({ message: "Payment completed and tutor approved" });
+            } catch (err) {
+                console.error(err);
+                res.status(500).send({ message: "Failed to confirm payment" });
+            }
+        });
+
 
         // Admin APIs
         app.get("/admin/users", verifyFirebaseToken, async (req, res) => {
@@ -320,7 +485,7 @@ async function run() {
             try {
                 const result = await usersCollection.updateOne({ _id: new ObjectId(id) }, { $set: updateData });
                 res.send(result);
-            } catch (err) {
+            } catch {
                 res.status(400).send({ message: "Invalid id" });
             }
         });
@@ -330,25 +495,25 @@ async function run() {
             try {
                 const result = await usersCollection.deleteOne({ _id: new ObjectId(id) });
                 res.send(result);
-            } catch (err) {
+            } catch {
                 res.status(400).send({ message: "Invalid id" });
             }
         });
 
         app.put("/admin/tuitions/:id/status", verifyFirebaseToken, async (req, res) => {
             const { id } = req.params;
-            const { status } = req.body; // Approved / Rejected
+            const { status } = req.body;
             try {
                 const result = await tuitionsCollection.updateOne({ _id: new ObjectId(id) }, { $set: { status } });
                 res.send(result);
-            } catch (err) {
+            } catch {
                 res.status(400).send({ message: "Invalid id" });
             }
         });
 
         console.log("MongoDB connected successfully!");
     } finally {
-        // Keep connection open
+        // keep connection open
     }
 }
 run().catch(console.dir);
