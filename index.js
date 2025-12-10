@@ -51,7 +51,7 @@ async function run() {
         const db = client.db("tuitron_db");
         const usersCollection = db.collection("users");
         const tuitionsCollection = db.collection("tuitions");
-        const tuitorsCollection = db.collection("tuitors");
+        const tutorsCollection = db.collection("tutors");
         const applicationsCollection = db.collection("applications");
         const paymentsCollection = db.collection("payments");
 
@@ -174,9 +174,14 @@ async function run() {
             }
         });
 
-        // Tuitor APIs
+        // Tutor APIs
         app.get("/tutors", async (req, res) => {
-            const tutors = await tuitorsCollection.find().toArray();
+            const tutors = await tutorsCollection.find().toArray();
+            res.send({ tutors });
+        });
+
+        app.get("/latest-tutors", async (req, res) => {
+            const tutors = await tutorsCollection.find().sort({ createdAt: -1 }).limit(5).toArray();
             res.send({ tutors });
         });
 
@@ -185,14 +190,14 @@ async function run() {
             if (!name || !email || !subjects || !class_levels || !location)
                 return res.status(400).send({ message: "Missing required fields" });
             const newTutor = { name, email, qualifications: qualifications || "", experience: experience || "", subjects, class_levels, location, expected_salary: expected_salary || 0, image: image || null, createdAt: new Date() };
-            const result = await tuitorsCollection.insertOne(newTutor);
+            const result = await tutorsCollection.insertOne(newTutor);
             res.status(201).send({ tutor: { _id: result.insertedId, ...newTutor } });
         });
 
         app.get("/tutors/:id", async (req, res) => {
             const { id } = req.params;
             try {
-                const tutor = await tuitorsCollection.findOne({ _id: new ObjectId(id) });
+                const tutor = await tutorsCollection.findOne({ _id: new ObjectId(id) });
                 if (!tutor) return res.status(404).send({ message: "Tutor not found" });
                 res.send(tutor);
             } catch (err) {
@@ -204,7 +209,7 @@ async function run() {
         app.put("/tutors/:id", verifyFirebaseToken, async (req, res) => {
             const { id } = req.params;
             try {
-                const result = await tuitorsCollection.updateOne({ _id: new ObjectId(id), email: req.token_email }, { $set: req.body });
+                const result = await tutorsCollection.updateOne({ _id: new ObjectId(id), email: req.token_email }, { $set: req.body });
                 res.send(result);
             } catch (err) {
                 res.status(400).send({ message: "Invalid id" });
@@ -214,7 +219,7 @@ async function run() {
         app.delete("/tutors/:id", verifyFirebaseToken, async (req, res) => {
             const { id } = req.params;
             try {
-                const result = await tuitorsCollection.deleteOne({ _id: new ObjectId(id), email: req.token_email });
+                const result = await tutorsCollection.deleteOne({ _id: new ObjectId(id), email: req.token_email });
                 res.send(result);
             } catch (err) {
                 res.status(400).send({ message: "Invalid id" });
