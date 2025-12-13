@@ -15,7 +15,7 @@ admin.initializeApp({
 });
 
 app.use(cors({
-    origin: process.env.SITE_DOMAIN || "http://localhost:5173",
+    origin: [process.env.SITE_DOMAIN, "http://localhost:5173"],
     credentials: true,
 }));
 app.use(express.json());
@@ -109,33 +109,66 @@ async function run() {
         });
 
         // Tuition APIs
-        app.post("/tuitions", verifyFirebaseToken, async (req, res) => {
-            const { subject, class_level, location, budget, schedule, details } = req.body;
-            const student_email = req.token_email;
-            if (!subject || !class_level || !location || !budget || !schedule)
-                return res.status(400).send({ message: "All fields required" });
-            const newTuition = { student_email, subject, class_level, location, budget, schedule, details: details || "", status: "Pending", createdAt: new Date() };
-            const result = await tuitionsCollection.insertOne(newTuition);
-            res.status(201).send({ tuition: { _id: result.insertedId, ...newTuition } });
+        app.get("/tuitions", async (req, res) => {
+            try {
+                const {
+                    email,
+                    course,
+                    subject,
+                    location,
+                    salaryMin,
+                    salaryMax,
+                } = req.query;
+
+                const query = {};
+
+                if (email) {
+                    query["postedBy.email"] = email;
+                }
+
+                if (course) {
+                    query.course = course;
+                }
+
+                if (subject) {
+                    query.subject = subject;
+                }
+
+                if (location) {
+                    query["contact.location"] = { $regex: location, $options: "i" };
+                }
+
+                if (salaryMin || salaryMax) {
+                    query.salary = {};
+                    if (salaryMin) query.salary.$gte = Number(salaryMin);
+                    if (salaryMax) query.salary.$lte = Number(salaryMax);
+                }
+
+                const tuitions = await tuitionsCollection.find(query).toArray();
+
+                res.status(200).send({
+                    success: true,
+                    tuitions,
+                });
+            } catch (error) {
+                console.error("Failed to fetch tuitions:", error);
+                res.status(500).send({
+                    success: false,
+                    message: "Failed to fetch tuitions",
+                });
+            }
         });
 
-        app.get("/tuitions", async (req, res) => {
-            const { singleId } = req.query;
-            if (singleId) {
-                try {
-                    const t = await tuitionsCollection.findOne({ _id: new ObjectId(singleId) });
-                    return res.send({ tuitions: t ? [t] : [] });
-                } catch {
-                    return res.status(400).send({ tuitions: [] });
-                }
-            }
-            const tuitions = await tuitionsCollection.find().toArray();
-            res.send({ tuitions });
+        app.post("/tuitions", async (req, res) => {
+            const tuition = req.body;
+            const result = await tuitionsCollection.insertOne(tuition);
+            res.send(result);
         });
 
         app.get("/latest-tuitions", async (req, res) => {
-            const tuitions = await tuitionsCollection.find().sort({ createdAt: -1 }).limit(5).toArray();
-            res.send({ tuitions });
+            const cursor = tuitionsCollection.find().sort({ createdAt: -1 }).limit(5);
+            const result = await cursor.toArray();
+            res.send(result);
         });
 
         app.get("/tuitions/:id", async (req, res) => {
@@ -149,6 +182,16 @@ async function run() {
                 res.status(500).send({ message: "Failed to fetch tuition" });
             }
         });
+
+
+
+
+
+
+
+
+
+
 
         app.put("/tuitions/:id", verifyFirebaseToken, async (req, res) => {
             const { id } = req.params;
