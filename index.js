@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const stripe = require('stripe')(process.env.STRIPE_SECRET)
 const admin = require("firebase-admin");
 
 const app = express();
@@ -110,57 +111,21 @@ async function run() {
 
         // Tuition APIs
         app.get("/tuitions", async (req, res) => {
-            try {
-                const {
-                    email,
-                    course,
-                    subject,
-                    location,
-                    salaryMin,
-                    salaryMax,
-                } = req.query;
+            const query = {};
+            const { email } = req.query;
 
-                const query = {};
-
-                if (email) {
-                    query["postedBy.email"] = email;
-                }
-
-                if (course) {
-                    query.course = course;
-                }
-
-                if (subject) {
-                    query.subject = subject;
-                }
-
-                if (location) {
-                    query["contact.location"] = { $regex: location, $options: "i" };
-                }
-
-                if (salaryMin || salaryMax) {
-                    query.salary = {};
-                    if (salaryMin) query.salary.$gte = Number(salaryMin);
-                    if (salaryMax) query.salary.$lte = Number(salaryMax);
-                }
-
-                const tuitions = await tuitionsCollection.find(query).toArray();
-
-                res.status(200).send({
-                    success: true,
-                    tuitions,
-                });
-            } catch (error) {
-                console.error("Failed to fetch tuitions:", error);
-                res.status(500).send({
-                    success: false,
-                    message: "Failed to fetch tuitions",
-                });
+            if (email) {
+                query["postedBy.email"] = email;
             }
+
+            const cursor = tuitionsCollection.find(query);
+            const result = await cursor.toArray();
+            res.send(result);
         });
 
         app.post("/tuitions", async (req, res) => {
             const tuition = req.body;
+            tuition.createdAt = new Date();
             const result = await tuitionsCollection.insertOne(tuition);
             res.send(result);
         });
@@ -183,13 +148,12 @@ async function run() {
             }
         });
 
-
-
-
-
-
-
-
+        app.delete("/tuitions/:id", async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+            const result = await tuitionsCollection.deleteOne(query)
+            res.send(result);
+        });
 
 
 
@@ -207,15 +171,6 @@ async function run() {
             }
         });
 
-        app.delete("/tuitions/:id", verifyFirebaseToken, async (req, res) => {
-            const { id } = req.params;
-            try {
-                const result = await tuitionsCollection.deleteOne({ _id: new ObjectId(id), student_email: req.token_email });
-                res.send(result);
-            } catch (err) {
-                res.status(400).send({ message: "Invalid id" });
-            }
-        });
 
         // Tutor APIs
         app.get("/tutors", async (req, res) => {
@@ -268,6 +223,72 @@ async function run() {
                 res.status(400).send({ message: "Invalid id" });
             }
         });
+
+
+        //Payment related APIs
+        app.post('/create-checkout-session', async (req, res) => {
+            const paymentInfo = req.body;
+            const amount = parseInt(paymentInfo.salary) * 100;
+
+            const session = await stripe.checkout.sessions.create({
+                line_items: [
+                    {
+                        price_data: {
+                            currency: "BDT",
+                            unit_amount: amount,
+                            product_data: {
+                                name: paymentInfo.subject,
+                            }
+                        },
+                        quantity: 1,
+                    },
+                ],
+                customer_email: paymentInfo.studentEmail,
+                mode: 'payment',
+                metadata: {
+                    tuitionId: paymentInfo.tuitionId,
+                    subject: paymentInfo.subject,
+                    salary: paymentInfo.salary
+                },
+                success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+                cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+            });
+            res.send({ url: session.url })
+        });
+
+        app.patch("/payment-success", async (req, res) => {
+            const sessionId = req.query.session_id;
+            const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+            if (session.payment_status === "paid") {
+                const id = session.metadata.tuitionId;
+                const query = { _id: new ObjectId(id) }
+                const update = {
+                    $set: {
+                        paymentStatus: "paid"
+                    }
+                }
+
+                const result = await tuitionsCollection.updateOne(query, update);
+                const payment = {
+                    amount: session.amount_total / 100,
+                    currency: session.currency,
+                    customerEmail: session.customer_email,
+                    tuitionId: session.metadata.tuitionId,
+                    subject: session.metadata.subject,
+                    transactionId: session.payment_intent,
+                    paymentStatus: session.payment_status,
+                    paidAt: new Date(),
+                }
+
+                if (session.payment_status === "paid") {
+                    const resultPayment = await paymentsCollection.insertOne(payment)
+                    res.send({ success: true, modifyTuition: result, paymentInfo: resultPayment });
+                }
+            }
+
+            res.send({ success: false });
+        })
 
 
         // Student APIs
