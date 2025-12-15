@@ -22,14 +22,14 @@ app.use(cors({
 app.use(express.json());
 
 const verifyFirebaseToken = async (req, res, next) => {
-    const header = req.headers.authorization;
-    if (!header?.startsWith("Bearer ")) return res.status(401).send({ message: "Unauthorized" });
-    const token = header.split(" ")[1];
+    const token = req.headers.authorization;
+
+    if (!token) return res.status(401).send({ message: "Unauthorized" });
+
+    const idToken = token.split(" ")[1];
     try {
-        const info = await admin.auth().verifyIdToken(token);
+        const info = await admin.auth().verifyIdToken(idToken);
         req.token_email = info.email;
-        req.token_uid = info.uid;
-        req.token_picture = info.picture || null;
         next();
     } catch {
         return res.status(401).send({ message: "Invalid token" });
@@ -260,6 +260,14 @@ async function run() {
             const sessionId = req.query.session_id;
             const session = await stripe.checkout.sessions.retrieve(sessionId);
 
+            const transactionId = session.payment_intent;
+            const query = { transactionId: transactionId }
+            const paymentExist = await paymentsCollection.findOne(query);
+
+            if (paymentExist) {
+                return res.send({ message: "Already Exist", transactionId })
+            }
+
             if (session.payment_status === "paid") {
                 const id = session.metadata.tuitionId;
                 const query = { _id: new ObjectId(id) }
@@ -283,11 +291,35 @@ async function run() {
 
                 if (session.payment_status === "paid") {
                     const resultPayment = await paymentsCollection.insertOne(payment)
-                    res.send({ success: true, modifyTuition: result, paymentInfo: resultPayment });
+                    res.send({
+                        success: true,
+                        modifyTuition: result,
+                        transactionId: session.payment_intent,
+                        paymentInfo: resultPayment
+
+                    });
                 }
             }
 
             res.send({ success: false });
+        })
+
+        app.get("/payments", verifyFirebaseToken, async (req, res) => {
+            const email = req.query.email;
+            const query = {};
+
+            if (email) {
+                query.customerEmail = email;
+
+                //email check
+                if (email !== req.token_email) {
+                    return res.status(403).send({ message: "Forbidden access" })
+                }
+            }
+
+            const cursor = paymentsCollection.find(query).sort({ paidAt: -1 });
+            const result = await cursor.toArray();
+            res.send(result);
         })
 
 
