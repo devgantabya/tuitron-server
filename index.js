@@ -57,57 +57,20 @@ async function run() {
         const paymentsCollection = db.collection("payments");
 
         // User APIs
-        app.post("/users/register", async (req, res) => {
-            const { name, email, phone, role, image } = req.body;
-            if (!name || !email || !phone) return res.status(400).send({ message: "Missing required fields" });
-            try {
-                let user = await usersCollection.findOne({ email });
-                if (!user) {
-                    const newUser = { uid: null, email, name, phone, role: role || "Student", image: image || null };
-                    await usersCollection.insertOne(newUser);
-                    user = newUser;
-                }
-                res.status(201).send({ user });
-            } catch (err) {
-                console.error(err);
-                res.status(500).send({ message: "Failed to create user" });
-            }
-        });
+        app.post('/users', async (req, res) => {
+            const user = req.body;
+            user.role = 'user';
+            user.createdAt = new Date();
+            const email = user.email;
+            const userExists = await usersCollection.findOne({ email })
 
-        app.post("/users/google", async (req, res) => {
-            const { name, email, image, uid } = req.body;
-            if (!email || !uid) return res.status(400).send({ message: "Missing uid or email" });
-            try {
-                let user = await usersCollection.findOne({ email });
-                if (!user) {
-                    const newUser = { uid, email, name, phone: "", role: "Student", image };
-                    await usersCollection.insertOne(newUser);
-                    user = newUser;
-                }
-                res.status(200).send({ user });
-            } catch (err) {
-                console.error(err);
-                res.status(500).send({ message: "Failed to login with Google" });
+            if (userExists) {
+                return res.send({ message: "User exist" })
             }
-        });
 
-        app.post("/users", verifyFirebaseToken, async (req, res) => {
-            const email = req.token_email;
-            let user = await usersCollection.findOne({ email });
-            if (!user) {
-                const newUser = { uid: req.token_uid, email, name: req.body.name, phone: req.body.phone || "", role: req.body.role || "Student", image: req.token_picture };
-                await usersCollection.insertOne(newUser);
-                user = newUser;
-            }
-            res.send({ user });
-        });
-
-        app.get("/users/role/:email", verifyFirebaseToken, async (req, res) => {
-            const { email } = req.params;
-            const user = await usersCollection.findOne({ email });
-            if (!user) return res.status(404).send({ message: "User not found" });
-            res.send({ email: user.email, role: user.role });
-        });
+            const result = await usersCollection.insertOne(user);
+            res.send(result);
+        })
 
         // Tuition APIs
         app.get("/tuitions", async (req, res) => {
@@ -174,8 +137,14 @@ async function run() {
 
         // Tutor APIs
         app.get("/tutors", async (req, res) => {
-            const tutors = await tutorsCollection.find().toArray();
-            res.send({ tutors });
+            const query = {};
+
+            if (req.query.status) {
+                query.status = req.query.status;
+            }
+            const cursors = tutorsCollection.find(query);
+            const result = await cursors.toArray();
+            res.send(result);
         });
 
         app.get("/latest-tutors", async (req, res) => {
@@ -183,13 +152,13 @@ async function run() {
             res.send({ tutors });
         });
 
-        app.post("/tutors", verifyFirebaseToken, async (req, res) => {
-            const { name, email, qualifications, experience, subjects, class_levels, location, expected_salary, image } = req.body;
-            if (!name || !email || !subjects || !class_levels || !location)
-                return res.status(400).send({ message: "Missing required fields" });
-            const newTutor = { name, email, qualifications: qualifications || "", experience: experience || "", subjects, class_levels, location, expected_salary: expected_salary || 0, image: image || null, createdAt: new Date() };
-            const result = await tutorsCollection.insertOne(newTutor);
-            res.status(201).send({ tutor: { _id: result.insertedId, ...newTutor } });
+        app.post("/tutors", async (req, res) => {
+            const tutor = req.body;
+            tutor.status = "pending";
+            tutor.createdAt = new Date();
+
+            const result = await tutorsCollection.insertOne(tutor);
+            res.send(result);
         });
 
         app.get("/tutors/:id", async (req, res) => {
@@ -204,14 +173,17 @@ async function run() {
             }
         });
 
-        app.put("/tutors/:id", verifyFirebaseToken, async (req, res) => {
-            const { id } = req.params;
-            try {
-                const result = await tutorsCollection.updateOne({ _id: new ObjectId(id), email: req.token_email }, { $set: req.body });
-                res.send(result);
-            } catch (err) {
-                res.status(400).send({ message: "Invalid id" });
+        app.patch("/tutors/:id", verifyFirebaseToken, async (req, res) => {
+            const status = req.body.status;
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+            updatedDoc = {
+                $set: {
+                    status: status
+                }
             }
+            const result = await tutorsCollection.updateOne(query, updatedDoc);
+            res.send(result);
         });
 
         app.delete("/tutors/:id", verifyFirebaseToken, async (req, res) => {
@@ -321,117 +293,6 @@ async function run() {
             const result = await cursor.toArray();
             res.send(result);
         })
-
-
-        // Student APIs
-        app.get("/student", verifyFirebaseToken, async (req, res) => {
-            try {
-                const email = req.token_email;
-                const tuitions = await tuitionsCollection.find({ student_email: email }).toArray();
-                res.send(tuitions);
-            } catch (err) {
-                console.error(err);
-                res.status(500).send([]);
-            }
-        });
-
-        app.post("/student", verifyFirebaseToken, async (req, res) => {
-            try {
-                const email = req.token_email;
-                const { subject, classLevel, location, budget, schedule, details } = req.body;
-
-                if (!subject || !classLevel || !location || !budget || !schedule)
-                    return res.status(400).send({ message: "All fields required" });
-
-                const newTuition = {
-                    student_email: email,
-                    subject,
-                    classLevel,
-                    location,
-                    budget,
-                    schedule,
-                    details: details || "",
-                    status: "Pending",
-                    createdAt: new Date(),
-                };
-
-                const result = await tuitionsCollection.insertOne(newTuition);
-                res.status(201).send({ _id: result.insertedId, ...newTuition });
-            } catch (err) {
-                console.error(err);
-                res.status(500).send({ message: "Failed to create tuition" });
-            }
-        });
-
-        app.put("/student/:id", verifyFirebaseToken, async (req, res) => {
-            try {
-                const { id } = req.params;
-                const email = req.token_email;
-
-                const updateData = req.body;
-                const result = await tuitionsCollection.updateOne(
-                    { _id: new ObjectId(id), student_email: email },
-                    { $set: updateData }
-                );
-
-                res.send(result);
-            } catch (err) {
-                console.error(err);
-                res.status(400).send({ message: "Invalid tuition id" });
-            }
-        });
-
-        app.delete("/student/:id", verifyFirebaseToken, async (req, res) => {
-            try {
-                const { id } = req.params;
-                const email = req.token_email;
-
-                const result = await tuitionsCollection.deleteOne({
-                    _id: new ObjectId(id),
-                    student_email: email,
-                });
-
-                res.send(result);
-            } catch (err) {
-                console.error(err);
-                res.status(400).send({ message: "Invalid tuition id" });
-            }
-        });
-
-        app.get("/student/:id/applications", verifyFirebaseToken, async (req, res) => {
-            try {
-                const { id } = req.params;
-                const applications = await applicationsCollection
-                    .find({ tuition_id: new ObjectId(id) })
-                    .toArray();
-
-                res.send(applications);
-            } catch (err) {
-                console.error(err);
-                res.status(500).send([]);
-            }
-        });
-
-        app.put("/student/:tuitionId/applications/:appId", verifyFirebaseToken, async (req, res) => {
-            try {
-                const { tuitionId, appId } = req.params;
-                const { action } = req.body;
-
-                if (!["approve", "reject"].includes(action))
-                    return res.status(400).send({ message: "Invalid action" });
-
-                const newStatus = action === "approve" ? "Approved" : "Rejected";
-                const result = await applicationsCollection.updateOne(
-                    { _id: new ObjectId(appId), tuition_id: new ObjectId(tuitionId) },
-                    { $set: { status: newStatus } }
-                );
-
-                res.send(result);
-            } catch (err) {
-                console.error(err);
-                res.status(400).send({ message: "Failed to update application" });
-            }
-        });
 
         console.log("MongoDB connected successfully!");
     } finally {
