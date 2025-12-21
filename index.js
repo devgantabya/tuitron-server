@@ -72,6 +72,33 @@ async function run() {
             res.send(result);
         })
 
+        app.get("/users", verifyFirebaseToken, async (req, res) => {
+            const cursor = usersCollection.find();
+            const result = await cursor.toArray();
+            res.send(result);
+        })
+
+        app.patch("/users/:id", verifyFirebaseToken, async (req, res) => {
+            const id = req.params.id;
+            const roleInfo = req.body;
+            const query = { _id: new ObjectId(id) };
+            const updatedDoc = {
+                $set: {
+                    role: roleInfo.role
+                }
+            }
+            const result = await usersCollection.updateOne(query, updatedDoc);
+            res.send(result);
+        }
+        )
+
+        app.delete("/users/:id", verifyFirebaseToken, async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+            const result = await usersCollection.deleteOne(query)
+            res.send(result);
+        });
+
         // Tuition APIs
         app.get("/tuitions", async (req, res) => {
             const query = {};
@@ -183,6 +210,18 @@ async function run() {
                 }
             }
             const result = await tutorsCollection.updateOne(query, updatedDoc);
+
+            if (status === "approved") {
+                const email = req.body.email;
+                const userQuery = { email };
+                const userUpdate = {
+                    $set: {
+                        role: "tutor"
+                    }
+                }
+                await usersCollection.updateOne(userQuery, userUpdate);
+            }
+
             res.send(result);
         });
 
