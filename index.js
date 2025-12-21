@@ -56,6 +56,19 @@ async function run() {
         const applicationsCollection = db.collection("applications");
         const paymentsCollection = db.collection("payments");
 
+        // Middleware to verify Admin
+        // Must be used after verifyFirebaseToken middleware
+        const verifyAdmin = async (req, res, next) => {
+            const email = req.token_email;
+            const query = { email };
+            const user = await usersCollection.findOne(query);
+            if (!user || user.role !== "admin") {
+                res.status(403).send({ message: "Forbidden access" });
+                return;
+            }
+            next();
+        }
+
         // User APIs
         app.post('/users', async (req, res) => {
             const user = req.body;
@@ -65,11 +78,14 @@ async function run() {
             const userExists = await usersCollection.findOne({ email })
 
             if (userExists) {
-                return res.send({ message: "User exist" })
+                return res.status(409).send({ message: "User already exists" });
             }
 
             const result = await usersCollection.insertOne(user);
-            res.send(result);
+            res.send({
+                insertedId: result.insertedId,
+                message: "User created successfully",
+            });
         })
 
         app.get("/users", verifyFirebaseToken, async (req, res) => {
@@ -78,7 +94,21 @@ async function run() {
             res.send(result);
         })
 
-        app.patch("/users/:id", verifyFirebaseToken, async (req, res) => {
+        app.get("/users/:id", async (req, res) => {
+            const id = req.params.id;
+        })
+
+        app.get("/users/:email/role", async (req, res) => {
+            const email = req.params.email;
+            const query = { email };
+            const user = await usersCollection.findOne(query);
+            if (!user) {
+                return res.send({ role: "user" });
+            }
+            res.send({ role: user?.role });
+        })
+
+        app.patch("/users/:id/role", verifyFirebaseToken, verifyAdmin, async (req, res) => {
             const id = req.params.id;
             const roleInfo = req.body;
             const query = { _id: new ObjectId(id) };
@@ -200,7 +230,7 @@ async function run() {
             }
         });
 
-        app.patch("/tutors/:id", verifyFirebaseToken, async (req, res) => {
+        app.patch("/tutors/:id", verifyFirebaseToken, verifyAdmin, async (req, res) => {
             const status = req.body.status;
             const id = req.params.id;
             const query = { _id: new ObjectId(id) };
