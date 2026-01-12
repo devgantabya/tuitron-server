@@ -28,8 +28,8 @@ const verifyFirebaseToken = async (req, res, next) => {
 
     const idToken = token.split(" ")[1];
     try {
-        const info = await admin.auth().verifyIdToken(idToken);
-        req.token_email = info.email;
+        const decoded = await admin.auth().verifyIdToken(idToken);
+        req.user = decoded;
         next();
     } catch {
         return res.status(401).send({ message: "Invalid token" });
@@ -53,13 +53,13 @@ async function run() {
         const usersCollection = db.collection("users");
         const tuitionsCollection = db.collection("tuitions");
         const tutorsCollection = db.collection("tutors");
-        const applicationsCollection = db.collection("applications");
         const paymentsCollection = db.collection("payments");
+        const applicationsCollection = db.collection("applications");
 
         // Middleware to verify Admin
         // Must be used after verifyFirebaseToken middleware
         const verifyAdmin = async (req, res, next) => {
-            const email = req.token_email;
+            const email = req.user.email;
             const query = { email };
             const user = await usersCollection.findOne(query);
             if (!user || user.role !== "admin") {
@@ -96,7 +96,14 @@ async function run() {
 
         app.get("/users/:id", async (req, res) => {
             const id = req.params.id;
-        })
+            try {
+                const user = await usersCollection.findOne({ _id: new ObjectId(id) });
+                if (!user) return res.status(404).send({ message: "User not found" });
+                res.send(user);
+            } catch {
+                res.status(400).send({ message: "Invalid id" });
+            }
+        });
 
         app.get("/users/:email/role", async (req, res) => {
             const email = req.params.email;
@@ -111,41 +118,165 @@ async function run() {
         app.patch("/users/:id/role", verifyFirebaseToken, verifyAdmin, async (req, res) => {
             const id = req.params.id;
             const roleInfo = req.body;
+            const newRole = roleInfo.role;
+
+            if (!["admin", "user", "tutor"].includes(newRole)) {
+                return res.status(400).send({ message: "Invalid role" });
+            }
+
             const query = { _id: new ObjectId(id) };
-            const updatedDoc = {
-                $set: {
-                    role: roleInfo.role
+            const targetUser = await usersCollection.findOne(query);
+
+            if (!targetUser) {
+                return res.status(404).send({ message: "User not found" });
+            }
+
+            if (targetUser.role === "admin" && newRole !== "admin") {
+                const adminCount = await usersCollection.countDocuments({
+                    role: "admin",
+                });
+
+                if (adminCount <= 1) {
+                    return res.status(400).send({
+                        message: "At least one admin must remain in the system",
+                    });
                 }
             }
-            const result = await usersCollection.updateOne(query, updatedDoc);
-            res.send(result);
-        }
-        )
 
-        app.delete("/users/:id", verifyFirebaseToken, async (req, res) => {
+            if (
+                targetUser.email === req.user.email &&
+                targetUser.role === "admin" &&
+                newRole !== "admin"
+            ) {
+                return res.status(400).send({
+                    message: "Admin cannot change their own role",
+                });
+            }
+
+            const updatedDoc = {
+                $set: {
+                    role: newRole,
+                },
+            };
+
+            const result = await usersCollection.updateOne(query, updatedDoc);
+
+            res.send({
+                success: true,
+                message: "Role updated successfully",
+                result,
+            });
+        }
+        );
+
+
+        app.delete("/users/:id", verifyFirebaseToken, verifyAdmin, async (req, res) => {
             const id = req.params.id;
             const query = { _id: new ObjectId(id) };
-            const result = await usersCollection.deleteOne(query)
-            res.send(result);
-        });
+
+            const targetUser = await usersCollection.findOne(query);
+
+            if (!targetUser) {
+                return res.status(404).send({ message: "User not found" });
+            }
+
+            if (targetUser.role === "admin") {
+                const adminCount = await usersCollection.countDocuments({
+                    role: "admin",
+                });
+
+                if (adminCount <= 1) {
+                    return res.status(400).send({
+                        message: "At least one admin must remain in the system",
+                    });
+                }
+            }
+
+            if (targetUser.email === req.user.email) {
+                return res.status(400).send({
+                    message: "You cannot delete your own account",
+                });
+            }
+
+            const result = await usersCollection.deleteOne(query);
+
+            res.send({
+                success: true,
+                message: "User deleted successfully",
+                result,
+            });
+        }
+        );
+
 
         // Tuition APIs
         app.get("/tuitions", async (req, res) => {
+            const {
+                email,
+                category,
+                course,
+                subject,
+                location,
+                salaryMin,
+                salaryMax,
+                method,
+                gender,
+            } = req.query;
+
             const query = {};
-            const { email } = req.query;
 
             if (email) {
                 query["postedBy.email"] = email;
             }
 
-            const cursor = tuitionsCollection.find(query);
-            const result = await cursor.toArray();
+            if (category) {
+                query.category = category;
+            }
+
+            if (course) {
+                query.course = course;
+            }
+
+            if (subject) {
+                query.subject = subject;
+            }
+
+            if (method) {
+                query.method = method;
+            }
+
+            if (gender) {
+                query.gender = gender;
+            }
+
+            if (location) {
+                query["contact.location"] = {
+                    $regex: location,
+                    $options: "i",
+                };
+            }
+
+            if (salaryMin || salaryMax) {
+                query.salary = {};
+                if (salaryMin) query.salary.$gte = Number(salaryMin);
+                if (salaryMax) query.salary.$lte = Number(salaryMax);
+            }
+
+            const result = await tuitionsCollection.find(query).toArray();
             res.send(result);
         });
 
-        app.post("/tuitions", async (req, res) => {
-            const tuition = req.body;
-            tuition.createdAt = new Date();
+
+        app.post("/tuitions", verifyFirebaseToken, async (req, res) => {
+            const tuition = {
+                ...req.body,
+                postedBy: {
+                    email: req.user.email,
+                    uid: req.user.uid,
+                },
+                student_email: req.user.email,
+                createdAt: new Date(),
+            };
             const result = await tuitionsCollection.insertOne(tuition);
             res.send(result);
         });
@@ -156,7 +287,7 @@ async function run() {
             res.send(result);
         });
 
-        app.get("/tuitions/:id", async (req, res) => {
+        app.get("/tuitions/:id", verifyFirebaseToken, async (req, res) => {
             const { id } = req.params;
             try {
                 const tuition = await tuitionsCollection.findOne({ _id: new ObjectId(id) });
@@ -168,9 +299,9 @@ async function run() {
             }
         });
 
-        app.delete("/tuitions/:id", async (req, res) => {
+        app.delete("/tuitions/:id", verifyFirebaseToken, async (req, res) => {
             const id = req.params.id;
-            const query = { _id: new ObjectId(id) };
+            const query = { _id: new ObjectId(id), "postedBy.email": req.user.email };
             const result = await tuitionsCollection.deleteOne(query)
             res.send(result);
         });
@@ -182,7 +313,7 @@ async function run() {
             const { subject, class_level, location, budget, schedule, details } = req.body;
             try {
                 const result = await tuitionsCollection.updateOne(
-                    { _id: new ObjectId(id), student_email: req.token_email },
+                    { _id: new ObjectId(id), student_email: req.user.email },
                     { $set: { subject, class_level, location, budget, schedule, details } }
                 );
                 res.send(result);
@@ -258,7 +389,7 @@ async function run() {
         app.delete("/tutors/:id", verifyFirebaseToken, async (req, res) => {
             const { id } = req.params;
             try {
-                const result = await tutorsCollection.deleteOne({ _id: new ObjectId(id), email: req.token_email });
+                const result = await tutorsCollection.deleteOne({ _id: new ObjectId(id), email: req.user.email });
                 res.send(result);
             } catch (err) {
                 res.status(400).send({ message: "Invalid id" });
@@ -267,7 +398,7 @@ async function run() {
 
 
         //Payment related APIs
-        app.post('/create-checkout-session', async (req, res) => {
+        app.post('/create-checkout-session', verifyFirebaseToken, async (req, res) => {
             const paymentInfo = req.body;
             const amount = parseInt(paymentInfo.salary) * 100;
 
@@ -353,7 +484,7 @@ async function run() {
                 query.customerEmail = email;
 
                 //email check
-                if (email !== req.token_email) {
+                if (email !== req.user.email) {
                     return res.status(403).send({ message: "Forbidden access" })
                 }
             }
@@ -362,6 +493,94 @@ async function run() {
             const result = await cursor.toArray();
             res.send(result);
         })
+
+        //Application related APIs
+        app.post("/applications", verifyFirebaseToken, async (req, res) => {
+            try {
+                const { tuitionId, message } = req.body;
+
+                if (!tuitionId || !message) {
+                    return res.status(400).send({ message: "Missing required fields" });
+                }
+
+                const tutorId = req.user.uid;
+                const tutorEmail = req.user.email;
+
+                const alreadyApplied = await applicationsCollection.findOne({
+                    tuitionId: new ObjectId(tuitionId),
+                    tutorId,
+                });
+
+                if (alreadyApplied) {
+                    return res.status(409).send({
+                        message: "You have already applied for this tuition",
+                    });
+                }
+
+                const application = {
+                    tuitionId: new ObjectId(tuitionId),
+                    tutorId,
+                    tutorEmail,
+                    message,
+                    status: "pending",
+                    appliedAt: new Date(),
+                };
+
+                const result = await applicationsCollection.insertOne(application);
+
+                res.status(201).send({
+                    success: true,
+                    message: "Application submitted successfully",
+                    applicationId: result.insertedId,
+                });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ message: "Server error" });
+            }
+        });
+
+        //get applications by tutor
+        app.get("/applications/my", verifyFirebaseToken, async (req, res) => {
+            const tutorId = req.user.uid;
+
+            const applications = await applicationsCollection
+                .find({ tutorId })
+                .sort({ appliedAt: -1 })
+                .toArray();
+
+            res.send(applications);
+        });
+
+        //get applications for a tuition(Admin/User)
+        app.get("/applications/tuition/:tuitionId", async (req, res) => {
+            const { tuitionId } = req.params;
+
+            const applications = await applicationsCollection
+                .find({ tuitionId: new ObjectId(tuitionId) })
+                .sort({ appliedAt: -1 })
+                .toArray();
+
+            res.send(applications);
+        });
+
+        //Update Application Status (Admin)
+        app.patch("/applications/:id", verifyFirebaseToken, verifyAdmin, async (req, res) => {
+            const { id } = req.params;
+            const { status } = req.body;
+
+            const allowed = ["pending", "accepted", "rejected"];
+            if (!allowed.includes(status)) {
+                return res.status(400).send({ message: "Invalid status" });
+            }
+
+            const result = await applicationsCollection.updateOne(
+                { _id: new ObjectId(id) },
+                { $set: { status } }
+            );
+
+            res.send(result);
+        });
+
 
         console.log("MongoDB connected successfully!");
     } finally {
